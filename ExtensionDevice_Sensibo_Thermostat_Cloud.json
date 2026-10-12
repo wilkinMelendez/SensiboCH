@@ -1,0 +1,56 @@
+{
+  "CrestronSerialDeviceApi": {
+    "DeviceSupport": {},
+    "DeviceSupport2": [],
+    "GeneralInformation": {
+      "DeviceType": "Demo",
+      "Manufacturer": "Sensibo",
+      "BaseModel": "Sensibo Thermostat",
+      "VersionDate": "2026-10-09 00:00:00.000",
+      "DriverVersion": "1.0000.0003",
+      "SdkVersion": "4.00.000",
+      "Description": "Control de aires acondicionados Sensibo (Sky / Air / Air Pro) por la API cloud de Sensibo",
+      "Guid": "173a8faf-8840-4653-864f-e64d6a8ecc85",
+      "DependencyGroup": "",
+      "Developer": {
+        "Company": "",
+        "Contact": "",
+        "Email": "",
+        "Website": "",
+        "PhoneNumber": ""
+      },
+      "ExtensionDeviceData": {
+        "IsExtensionDevice": true,
+        "IsMediaDevice": false,
+        "IsMediaSource": false
+      },
+      "SupportedSeries": [ "Sensibo" ],
+      "SupportedModels": [ "Sensibo Sky", "Sensibo Air", "Sensibo Air Pro" ]
+    },
+    "Api": {
+      "Communication": {
+        "CommunicationType": 5,
+        "Protocol": -1,
+        "Baud": -1,
+        "Parity": -1,
+        "HwHandshake": -1,
+        "SwHandshake": -1,
+        "DataBits": 0,
+        "StopBits": -1,
+        "Port": 443,
+        "EnableAutoPolling": false,
+        "EnableAutoReconnect": true,
+        "TimeBetweenCommands": 250,
+        "ResponseTimeout": 10000,
+        "WaitForResponse": false,
+        "IpProtocol": 0,
+        "IsUserAdjustable": false,
+        "Authentication": { "Type": "None", "Required": false },
+        "IsSecure": true,
+        "UserAdjustableProperties": [],
+        "DeviceId": 0
+      }
+    },
+    "UserAttributes": []
+  }
+}

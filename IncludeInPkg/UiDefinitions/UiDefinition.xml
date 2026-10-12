@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<uidefinition xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://prd-use-rad-assets.azurewebsites.net/ExtensionsSchemaDefinition.xsd">
+  <version ver="3.0" />
+  <tile status="{tileStatus}" icon="{tileIcon}" secondaryicon="{tileSecondaryIcon}" action="command:togglePower" navigation="show:sensiboMainPage" showinhomepage="#false" showinroompage="#true"/>
+  <layouts>
+
+    <layout id="sensiboMainPage" title="^mainPage" isdefaultlayout="#true">
+      <controls>
+
+        <thermostat id="sensiboThermostat" title="{statusText}" heatmodeenabled="{heatModeEnabled}" coolmodeenabled="{coolModeEnabled}" automodeenabled="{autoModeEnabled}" temperatureunits="{temperatureUnits}" toplefticon="#icClimateRegular" setpointauto="{setpointAuto}" setpointcool="{setpointCool}" setpointheat="{setpointHeat}" modeicon="{modeIcon}" currenttemperature="{currentTemperature}" currenttemperaturelabel="{currentTemperatureLabel}" />
+
+        <subheader id="subheaderControl" label="^subheaderControl" />
+        <controlgroup>
+          <toggle id="powerToggle" label="^power" value="{powerOn}" secondarylabel="{powerLabel}" />
+          <selectorbutton id="modeSelector" label="^mode" value="{acMode}" />
+          <selectorbutton id="fanSelector" label="^fan" value="{fanLevel}" />
+        </controlgroup>
+
+        <subheader id="subheaderInfo" label="^subheaderInfo" />
+        <controlgroup>
+          <textdisplay id="humidityDisplay" title="^humidity" line1label="{humidityLabel}" />
+          <button id="refreshButton" label="^refresh" action="command:refresh" />
+        </controlgroup>
+
+      </controls>
+    </layout>
+
+  </layouts>
+</uidefinition>
