@@ -23,6 +23,7 @@
 	"statusNeedsApiKey": "API key required",
 	"statusBadApiKey": "Invalid API key",
 	"statusNoDevices": "No Sensibo devices found",
+	"statusPodNotFound": "Sensibo device not found (check the Pod ID)",
 	"statusOffline": "Offline",
 	"opPowerOn": "Turn On",
 	"opPowerOff": "Turn Off",

@@ -90,8 +90,10 @@ namespace SensiboCrestronHome
         private readonly Dictionary<string, PropertyAvailableValue<string>> _modeValues = new Dictionary<string, PropertyAvailableValue<string>>();
         private readonly Dictionary<string, PropertyAvailableValue<string>> _fanValues = new Dictionary<string, PropertyAvailableValue<string>>();
         private bool _capabilitiesLoaded;
+        private SensiboRemoteCapabilities _capabilities;
         private string _apiKey = string.Empty;
-        private string _podId = string.Empty;
+        private string _podIdSetting = string.Empty;   // valor del atributo de usuario
+        private string _podId = string.Empty;          // pod activo (el configurado o el primero de la cuenta)
         private int _pollSeconds = 60;
         private string _unit = "C";
         private bool _polling;
@@ -100,10 +102,19 @@ namespace SensiboCrestronHome
         private CTimer _pollTimer;
         private CTimer _flushTimer;
         private bool _flushing;
+        private bool _flushAgain;
+        private bool _disposed;
         private DateTime _backoffUntil = DateTime.MinValue;
+
+        // Contadores para descartar respuestas viejas: cambian al reconfigurar el driver y con cada escritura
+        private int _configGeneration;
+        private int _writeGeneration;
 
         // Cambios pendientes de enviar: propiedad de Sensibo -> valor (el último gana)
         private readonly Dictionary<string, object> _pending = new Dictionary<string, object>();
+
+        // Orden de envío: el modo antes que el setpoint (Sensibo valida la temperatura contra el modo activo)
+        private static readonly string[] SendOrder = new[] { "mode", "fanLevel", "targetTemperature" };
 
         #endregion
 
@@ -215,6 +226,8 @@ namespace SensiboCrestronHome
         private void OnUserAttribute(string attributeId, string value)
         {
             var v = value == null ? string.Empty : value.Trim();
+            var changed = false;
+            SensiboApiClient oldApi = null;
             switch (attributeId)
             {
                 case AttrApiKey:
@@ -223,21 +236,55 @@ namespace SensiboCrestronHome
                         if (v != _apiKey)
                         {
                             _apiKey = v;
-                            DisposeApi();
+                            oldApi = _api;
+                            _api = null;
+                            ResetDeviceState();
+                            changed = true;
                         }
                     }
                     break;
                 case AttrPodId:
-                    _podId = v;
+                    lock (_sync)
+                    {
+                        if (v != _podIdSetting)
+                        {
+                            _podIdSetting = v;
+                            ResetDeviceState();
+                            changed = true;
+                        }
+                    }
                     break;
                 case AttrPollSeconds:
                     int seconds;
-                    if (TryParseInt(v, out seconds))
+                    if (int.TryParse(v, out seconds))
                         _pollSeconds = Math.Max(30, seconds);
                     break;
             }
 
+            // Fuera del lock: espera a que termine una petición en curso del cliente anterior
+            if (oldApi != null) oldApi.Dispose();
+            if (changed && _initialized)
+            {
+                ApplyModeFlags(_mode.Value);
+                Commit();
+            }
+
             if (_initialized) StartIfConfigured();
+        }
+
+        /// <summary>
+        /// Olvida todo lo ligado al equipo anterior (pod, capacidades, cambios sin enviar).
+        /// Se llama con _sync tomado al cambiar la API key o el Pod ID.
+        /// </summary>
+        private void ResetDeviceState()
+        {
+            _podId = _podIdSetting;
+            _capabilities = null;
+            _capabilitiesLoaded = false;
+            _pending.Clear();
+            _configGeneration++;
+            foreach (var kv in _modeValues) kv.Value.Enabled = true;
+            foreach (var kv in _fanValues) kv.Value.Enabled = true;
         }
 
         private void StartIfConfigured()
@@ -256,6 +303,7 @@ namespace SensiboCrestronHome
 
         public override void Dispose()
         {
+            lock (_sync) _disposed = true;
             if (_pollTimer != null)
             {
                 _pollTimer.Stop();
@@ -274,11 +322,13 @@ namespace SensiboCrestronHome
 
         private void DisposeApi()
         {
-            if (_api != null)
+            SensiboApiClient api;
+            lock (_sync)
             {
-                _api.Dispose();
+                api = _api;
                 _api = null;
             }
+            if (api != null) api.Dispose();
         }
 
         private SensiboApiClient Api
@@ -287,7 +337,7 @@ namespace SensiboCrestronHome
             {
                 lock (_sync)
                 {
-                    if (_api == null && !string.IsNullOrEmpty(_apiKey))
+                    if (_api == null && !_disposed && !string.IsNullOrEmpty(_apiKey))
                         _api = new SensiboApiClient(_apiKey);
                     return _api;
                 }
@@ -303,12 +353,25 @@ namespace SensiboCrestronHome
             Refresh();
         }
 
+        /// <summary>Pide una consulta inmediata en el hilo del temporizador, sin bloquear al que llama (p. ej. la UI).</summary>
+        private void RequestRefresh()
+        {
+            if (_pollTimer != null)
+                _pollTimer.Reset(0, _pollSeconds * 1000);
+            else
+                StartIfConfigured();
+        }
+
         private void Refresh()
         {
+            int configGen;
+            string podId;
             lock (_sync)
             {
                 if (_polling) return;
                 _polling = true;
+                configGen = _configGeneration;
+                podId = _podId;
             }
 
             try
@@ -317,7 +380,7 @@ namespace SensiboCrestronHome
                 if (api == null) return;
                 if (InBackoff()) return;
 
-                if (string.IsNullOrEmpty(_podId))
+                if (string.IsNullOrEmpty(podId))
                 {
                     var pods = api.GetPods();
                     if (pods == null || pods.Count == 0)
@@ -325,15 +388,22 @@ namespace SensiboCrestronHome
                         SetStatus(false, "^statusNoDevices");
                         return;
                     }
-                    _podId = pods[0].Id;
-                    Log("Sensibo: PodId not set, using " + _podId);
+                    lock (_sync)
+                    {
+                        if (configGen != _configGeneration) return;
+                        _podId = podId = pods[0].Id;
+                    }
+                    Log("Sensibo: PodId not set, using " + podId);
                 }
 
                 if (!_capabilitiesLoaded)
-                    LoadCapabilities(api);
+                    LoadCapabilities(api, podId, configGen);
 
-                var pod = api.GetPod(_podId);
-                ApplyPod(pod);
+                int writeGen;
+                lock (_sync) writeGen = _writeGeneration;
+
+                var pod = api.GetPod(podId);
+                ApplyPod(pod, configGen, writeGen);
             }
             catch (SensiboApiException ex)
             {
@@ -343,7 +413,11 @@ namespace SensiboCrestronHome
                     return;
                 }
                 ErrorLog.Error("Sensibo: poll failed: " + ex.Message);
-                SetStatus(false, ex.StatusCode == 401 || ex.StatusCode == 403 ? "^statusBadApiKey" : "^statusOffline");
+                string status;
+                if (ex.StatusCode == 401 || ex.StatusCode == 403) status = "^statusBadApiKey";
+                else if (ex.StatusCode == 404) status = "^statusPodNotFound";
+                else status = "^statusOffline";
+                SetStatus(false, status);
             }
             catch (Exception ex)
             {
@@ -356,18 +430,24 @@ namespace SensiboCrestronHome
             }
         }
 
-        private void ApplyPod(SensiboPod pod)
+        private void ApplyPod(SensiboPod pod, int configGen, int writeGen)
         {
             if (pod == null) return;
 
             var alive = pod.ConnectionStatus == null || pod.ConnectionStatus.IsAlive;
             var ac = pod.AcState;
 
-            bool hasPending;
-            lock (_sync) hasPending = _pending.Count > 0;
+            bool stale;
+            lock (_sync)
+            {
+                // La respuesta es de un equipo o una API key que ya no están configurados
+                if (configGen != _configGeneration) return;
+                // Hay cambios sin enviar, o se envió alguno mientras se consultaba:
+                // el acState recibido puede ser anterior a lo que muestra la UI
+                stale = _pending.Count > 0 || writeGen != _writeGeneration;
+            }
 
-            // Si hay cambios sin enviar, la nube todavía tiene el estado viejo: no lo aplicamos a la UI
-            if (ac != null && !hasPending)
+            if (ac != null && !stale)
             {
                 _unit = ac.TemperatureUnit == "F" ? "F" : "C";
                 _units.Value = _unit == "F" ? "Fahrenheit" : "Celsius";
@@ -405,12 +485,62 @@ namespace SensiboCrestronHome
             Commit();
         }
 
+        /// <summary>
+        /// Ajusta el control de termostato y las velocidades disponibles al modo activo.
+        /// heat y auto usan su propio setpoint; los demás modos con temperatura (cool, dry y, en algunos
+        /// equipos, fan) usan el de frío. Un modo sin temperatura no muestra setpoint.
+        /// </summary>
         private void ApplyModeFlags(string mode)
         {
+            var hasTemperature = ModeHasTemperature(mode);
             _heatEnabled.Value = mode == "heat";
-            _coolEnabled.Value = mode == "cool";
             _autoEnabled.Value = mode == "auto";
-            _modeIcon.Value = mode == "cool" ? IconCooling : IconClimate;
+            _coolEnabled.Value = hasTemperature && mode != "heat" && mode != "auto";
+            _modeIcon.Value = mode == "cool" || mode == "dry" ? IconCooling : IconClimate;
+
+            var modeCaps = GetModeCapabilities(mode);
+            var fanLevels = modeCaps != null ? modeCaps.FanLevels : null;
+            foreach (var kv in _fanValues)
+                kv.Value.Enabled = fanLevels == null || fanLevels.Count == 0 || fanLevels.Contains(kv.Key);
+        }
+
+        private SensiboModeCapabilities GetModeCapabilities(string mode)
+        {
+            var caps = _capabilities;
+            SensiboModeCapabilities modeCaps;
+            if (caps == null || caps.Modes == null || mode == null || !caps.Modes.TryGetValue(mode, out modeCaps))
+                return null;
+            return modeCaps;
+        }
+
+        /// <summary>Sin capacidades conocidas se asume que todos los modos menos fan aceptan temperatura.</summary>
+        private bool ModeHasTemperature(string mode)
+        {
+            var modeCaps = GetModeCapabilities(mode);
+            if (modeCaps == null) return mode != "fan";
+            return modeCaps.Temperatures != null && modeCaps.Temperatures.Count > 0;
+        }
+
+        /// <summary>Rango de setpoint del modo en la unidad activa; si el equipo no lo informa, 16-30 °C / 61-86 °F.</summary>
+        private void GetSetpointRange(string mode, out int min, out int max)
+        {
+            min = _unit == "F" ? 61 : 16;
+            max = _unit == "F" ? 86 : 30;
+
+            var modeCaps = GetModeCapabilities(mode);
+            SensiboTemperatureRange range;
+            if (modeCaps == null || modeCaps.Temperatures == null ||
+                !modeCaps.Temperatures.TryGetValue(_unit, out range) ||
+                range == null || range.Values == null || range.Values.Count == 0)
+                return;
+
+            min = int.MaxValue;
+            max = int.MinValue;
+            foreach (var v in range.Values)
+            {
+                if (v < min) min = v;
+                if (v > max) max = v;
+            }
         }
 
         private void SetAllSetpoints(int value)
@@ -451,7 +581,7 @@ namespace SensiboCrestronHome
                         SetPower(!_power.Value);
                         break;
                     case CmdRefresh:
-                        Refresh();
+                        RequestRefresh();
                         break;
                     default:
                         ErrorLog.Warn("Sensibo: unhandled command: " + command);
@@ -564,8 +694,15 @@ namespace SensiboCrestronHome
             [Max(86)]
             int setpoint)
         {
-            var min = _unit == "F" ? 61 : 16;
-            var max = _unit == "F" ? 86 : 30;
+            var mode = _mode.Value;
+            if (!ModeHasTemperature(mode))
+            {
+                ErrorLog.Warn("Sensibo: mode " + mode + " has no setpoint, ignoring " + setpoint);
+                return;
+            }
+
+            int min, max;
+            GetSetpointRange(mode, out min, out max);
             var sp = Math.Min(max, Math.Max(min, setpoint));
 
             Queue("targetTemperature", sp, SetpointDebounceMs);
@@ -602,8 +739,29 @@ namespace SensiboCrestronHome
             lock (_sync)
             {
                 _pending[sensiboProperty] = value;
+                _writeGeneration++;
             }
             ScheduleFlush(delayMs);
+        }
+
+        /// <summary>
+        /// Siguiente propiedad a enviar (con _sync tomado). Apagar va primero; encender va al final,
+        /// para que el equipo arranque ya con el modo, la velocidad y el setpoint nuevos.
+        /// </summary>
+        private string NextPendingProperty()
+        {
+            object on;
+            var hasOn = _pending.TryGetValue("on", out on);
+            if (hasOn && !Convert.ToBoolean(on)) return "on";
+
+            foreach (var p in SendOrder)
+                if (_pending.ContainsKey(p)) return p;
+
+            if (hasOn) return "on";
+
+            foreach (var kv in _pending)
+                return kv.Key;
+            return null;
         }
 
         private void ScheduleFlush(int delayMs)
@@ -611,6 +769,7 @@ namespace SensiboCrestronHome
             var wait = Math.Max(delayMs, BackoffRemainingMs());
             lock (_sync)
             {
+                if (_disposed) return;
                 if (_flushTimer == null)
                     _flushTimer = new CTimer(FlushCallback, null, wait);
                 else
@@ -622,7 +781,12 @@ namespace SensiboCrestronHome
         {
             lock (_sync)
             {
-                if (_flushing) return;
+                if (_flushing)
+                {
+                    // El envío en curso ya consumió este disparo: se reprograma al terminar
+                    _flushAgain = true;
+                    return;
+                }
                 _flushing = true;
             }
 
@@ -637,21 +801,19 @@ namespace SensiboCrestronHome
                         return;
                     }
 
-                    string property = null;
+                    string property;
                     object value = null;
+                    string podId;
                     lock (_sync)
                     {
-                        foreach (var kv in _pending)
-                        {
-                            property = kv.Key;
-                            value = kv.Value;
-                            break;
-                        }
+                        property = NextPendingProperty();
+                        if (property != null) value = _pending[property];
+                        podId = _podId;
                     }
                     if (property == null) break;
 
                     var api = Api;
-                    if (api == null || string.IsNullOrEmpty(_podId))
+                    if (api == null || string.IsNullOrEmpty(podId))
                     {
                         lock (_sync) _pending.Clear();
                         break;
@@ -659,10 +821,11 @@ namespace SensiboCrestronHome
 
                     try
                     {
-                        api.SetAcProperty(_podId, property, value);
+                        api.SetAcProperty(podId, property, value);
                         sentAny = true;
                         lock (_sync)
                         {
+                            _writeGeneration++;
                             // Solo se borra si nadie lo cambió mientras se enviaba
                             object current;
                             if (_pending.TryGetValue(property, out current) && Equals(current, value))
@@ -677,6 +840,13 @@ namespace SensiboCrestronHome
                             ScheduleFlush(0);
                             return;
                         }
+                        if (ex.IsTransient)
+                        {
+                            // Error de red o del servidor: se conserva el cambio y se reintenta
+                            ErrorLog.Error("Sensibo: write " + property + " failed, retrying: " + ex.Message);
+                            ScheduleFlush(RetryAfterErrorMs);
+                            return;
+                        }
                         // Error definitivo (p. ej. valor no soportado por el equipo): se descarta y se resincroniza la UI
                         ErrorLog.Error("Sensibo: write " + property + " failed: " + ex.Message);
                         lock (_sync) _pending.Remove(property);
@@ -684,7 +854,7 @@ namespace SensiboCrestronHome
                     }
                     catch (Exception ex)
                     {
-                        // Error de red: se conserva el cambio y se reintenta
+                        // Error inesperado: se conserva el cambio y se reintenta
                         ErrorLog.Error("Sensibo: write " + property + " failed, retrying: " + ex.Message);
                         ScheduleFlush(RetryAfterErrorMs);
                         return;
@@ -696,7 +866,14 @@ namespace SensiboCrestronHome
             }
             finally
             {
-                lock (_sync) _flushing = false;
+                bool again;
+                lock (_sync)
+                {
+                    _flushing = false;
+                    again = _flushAgain && _pending.Count > 0;
+                    _flushAgain = false;
+                }
+                if (again) ScheduleFlush(0);
             }
         }
 
@@ -732,37 +909,36 @@ namespace SensiboCrestronHome
         #endregion
 
         /// <summary>
-        /// Deshabilita en la UI los modos y velocidades que el AC no soporta.
+        /// Guarda las capacidades del AC (modos, velocidades y rangos de temperatura por modo) y deshabilita en la UI lo que no soporta.
         /// Si falla, todas las opciones quedan habilitadas (Sensibo rechazará las no soportadas y el driver resincroniza).
         /// </summary>
-        private void LoadCapabilities(SensiboApiClient api)
+        private void LoadCapabilities(SensiboApiClient api, string podId, int configGen)
         {
             try
             {
-                var caps = api.GetCapabilities(_podId);
-                if (caps == null || caps.Modes == null || caps.Modes.Count == 0) return;
-
-                var supportedFans = new Dictionary<string, bool>();
-                foreach (var kv in caps.Modes)
+                var caps = api.GetCapabilities(podId);
+                lock (_sync)
                 {
-                    if (kv.Value != null && kv.Value.FanLevels != null)
-                        foreach (var f in kv.Value.FanLevels) supportedFans[f] = true;
+                    if (configGen != _configGeneration) return;
+                    _capabilitiesLoaded = true;
+                    if (caps == null || caps.Modes == null || caps.Modes.Count == 0) return;
+                    _capabilities = caps;
                 }
 
                 foreach (var kv in _modeValues)
                     kv.Value.Enabled = caps.Modes.ContainsKey(kv.Key);
-                if (supportedFans.Count > 0)
-                    foreach (var kv in _fanValues)
-                        kv.Value.Enabled = supportedFans.ContainsKey(kv.Key);
-
-                _capabilitiesLoaded = true;
+                ApplyModeFlags(_mode.Value);
                 Commit();
             }
             catch (SensiboApiException ex)
             {
-                if (ex.StatusCode == 429) throw;
+                // 429 y errores de red se manejan en Refresh; las capacidades se vuelven a pedir en la siguiente consulta
+                if (ex.StatusCode == 429 || ex.IsTransient) throw;
                 ErrorLog.Warn("Sensibo: could not read capabilities: " + ex.Message);
-                _capabilitiesLoaded = true;
+                lock (_sync)
+                {
+                    if (configGen == _configGeneration) _capabilitiesLoaded = true;
+                }
             }
         }
 
@@ -783,21 +959,6 @@ namespace SensiboCrestronHome
                 case "high": return "High";
                 case "strong": return "Strong";
                 default: return value;
-            }
-        }
-
-        private static bool TryParseInt(string s, out int value)
-        {
-            // int.TryParse no existe en .NET Compact Framework 3.5
-            try
-            {
-                value = int.Parse(s);
-                return true;
-            }
-            catch
-            {
-                value = 0;
-                return false;
             }
         }
     }

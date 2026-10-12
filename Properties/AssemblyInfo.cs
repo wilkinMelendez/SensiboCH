@@ -4,4 +4,4 @@ using System.Reflection;
 [assembly: AssemblyCompany("")]
 [assembly: AssemblyProduct("ExtensionDevice_Sensibo_Thermostat_Cloud")]
 [assembly: AssemblyCopyright("")]
-[assembly: AssemblyVersion("1.0000.0003")]
+[assembly: AssemblyVersion("1.0000.0004")]
