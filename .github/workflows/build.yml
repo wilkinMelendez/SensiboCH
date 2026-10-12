@@ -1,0 +1,29 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Compilar driver y generar paquete
+        run: dotnet build -c Release -warnaserror
+
+      - name: Publicar paquete
+        uses: actions/upload-artifact@v4
+        with:
+          name: ExtensionDevice_Sensibo_Thermostat_Cloud
+          path: |
+            bin/Release/net47/ExtensionDevice_Sensibo_Thermostat_Cloud.pkg
+            bin/Release/net47/ExtensionDevice_Sensibo_Thermostat_Cloud.dat
+          if-no-files-found: error
