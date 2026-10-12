@@ -55,7 +55,7 @@ No requiere hardware adicional ni integración local: el procesador habla direct
 
 ## Instalación
 
-1. Descarga o [compila](#compilación) el paquete `ExtensionDevice_Sensibo_Thermostat_Cloud.pkg`.
+1. Descarga el paquete `ExtensionDevice_Sensibo_Thermostat_Cloud.pkg` desde [Releases](https://github.com/wilkinMelendez/SensiboCH/releases/latest), o [compílalo](#compilación).
 2. En **Crestron Home Setup**, ve a **Drivers** y carga el `.pkg`.
 3. Agrega el dispositivo **Sensibo Thermostat** a la habitación que corresponda.
 4. Completa los parámetros descritos en [Configuración](#configuración).
@@ -156,6 +156,8 @@ El paquete `ExtensionDevice_Sensibo_Thermostat_Cloud.pkg` se genera en `bin/Rele
 > El código está escrito con sintaxis **C# 3** (`<LangVersion>3</LangVersion>`), por compatibilidad con la cadena de compilación de Crestron. No uses características de versiones más nuevas del lenguaje.
 
 Cada push a `main` y cada pull request se compilan en GitHub Actions ([`build.yml`](.github/workflows/build.yml)). El `.pkg` resultante queda disponible como artefacto de la ejecución.
+
+Para publicar una versión, actualiza `DriverVersion` en el manifiesto (y `AssemblyVersion`), agrega su entrada al [historial](#historial-de-versiones) y ejecuta el workflow **Release** desde la pestaña Actions (o haz push del tag `v<DriverVersion>`). El workflow compila, crea el release con el `.pkg` adjunto y toma las notas de este README.
 
 Para compilar sin generar el paquete:
 

@@ -1,0 +1,57 @@
+name: Release
+
+# Publica un release con el .pkg del driver.
+# - Push de un tag "v<DriverVersion>" (p. ej. v1.0000.0004), o
+# - Ejecución manual: crea el tag a partir de DriverVersion del manifiesto.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Leer versión del manifiesto
+        id: version
+        run: |
+          version=$(jq -r '.CrestronSerialDeviceApi.GeneralInformation.DriverVersion' ExtensionDevice_Sensibo_Thermostat_Cloud.json)
+          tag="v$version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "::error::El tag $GITHUB_REF_NAME no coincide con DriverVersion ($version)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Compilar driver y generar paquete
+        run: dotnet build -c Release -warnaserror
+
+      - name: Notas del release (desde el historial del README)
+        run: |
+          awk -v v="### ${{ steps.version.outputs.version }}" '
+            $0 == v { found = 1; next }
+            found && /^#/ { exit }
+            found { print }
+          ' README.md > release-notes.md
+          [ -s release-notes.md ] || echo "Driver Sensibo para Crestron Home ${{ steps.version.outputs.version }}." > release-notes.md
+          cat release-notes.md
+
+      - name: Publicar release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" \
+            bin/Release/net47/ExtensionDevice_Sensibo_Thermostat_Cloud.pkg \
+            --target "$GITHUB_SHA" \
+            --title "Sensibo para Crestron Home ${{ steps.version.outputs.version }}" \
+            --notes-file release-notes.md
