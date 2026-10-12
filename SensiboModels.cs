@@ -66,6 +66,14 @@ namespace SensiboCrestronHome
     public class SensiboModeCapabilities
     {
         [JsonProperty("fanLevels")] public List<string> FanLevels { get; set; }
+
+        /// <summary>Setpoints válidos por unidad ("C" / "F"). Ausente en modos sin temperatura (p. ej. fan).</summary>
+        [JsonProperty("temperatures")] public Dictionary<string, SensiboTemperatureRange> Temperatures { get; set; }
+    }
+
+    public class SensiboTemperatureRange
+    {
+        [JsonProperty("values")] public List<int> Values { get; set; }
     }
 
     public class SensiboPodCapabilities

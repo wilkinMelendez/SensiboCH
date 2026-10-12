@@ -13,6 +13,8 @@ namespace SensiboCrestronHome
     /// <summary>
     /// Cliente mínimo para la API cloud v2 de Sensibo (https://home.sensibo.com/api/v2).
     /// Pide respuestas gzip: Sensibo da un límite de peticiones más alto a los clientes que las aceptan.
+    /// La API v2 solo acepta la key como parámetro de la URL, por eso se valida el certificado TLS
+    /// y la key nunca aparece en los mensajes de error.
     /// </summary>
     public class SensiboApiClient : IDisposable
     {
@@ -20,6 +22,7 @@ namespace SensiboCrestronHome
         private readonly HttpsClient _client;
         private readonly CCriticalSection _lock = new CCriticalSection();
         private readonly string _apiKey;
+        private bool _disposed;
 
         public SensiboApiClient(string apiKey)
         {
@@ -29,8 +32,8 @@ namespace SensiboCrestronHome
             _client.KeepAlive = true;
             _client.TimeoutEnabled = true;
             _client.Timeout = 10;
-            _client.PeerVerification = false;
-            _client.HostVerification = false;
+            _client.PeerVerification = true;
+            _client.HostVerification = true;
         }
 
         public List<SensiboPod> GetPods()
@@ -73,13 +76,24 @@ namespace SensiboCrestronHome
             _lock.Enter();
             try
             {
-                var response = _client.Dispatch(request);
+                if (_disposed) throw new ObjectDisposedException("SensiboApiClient");
+
+                HttpsClientResponse response;
+                try
+                {
+                    response = _client.Dispatch(request);
+                }
+                catch (Exception ex)
+                {
+                    // Las excepciones de red pueden incluir la URL, y con ella la API key
+                    throw new SensiboApiException("Request failed: " + Sanitize(ex.Message), 0);
+                }
                 if (response == null)
                     throw new SensiboApiException("No response from Sensibo", 0);
 
                 var content = ReadContent(response);
                 if (response.Code < 200 || response.Code >= 300)
-                    throw new SensiboApiException("HTTP " + response.Code + ": " + content, response.Code);
+                    throw new SensiboApiException("HTTP " + response.Code + ": " + Sanitize(content), response.Code);
                 return content;
             }
             finally
@@ -113,15 +127,38 @@ namespace SensiboCrestronHome
             return Encoding.UTF8.GetString(bytes, 0, bytes.Length);
         }
 
+        private string Sanitize(string text)
+        {
+            return string.IsNullOrEmpty(text) ? string.Empty : text.Replace(_apiKey, "***");
+        }
+
+        /// <summary>Espera a que termine la petición en curso (máx. el timeout) antes de liberar el cliente.</summary>
         public void Dispose()
         {
-            _client.Dispose();
+            _lock.Enter();
+            try
+            {
+                if (_disposed) return;
+                _disposed = true;
+                _client.Dispose();
+            }
+            finally
+            {
+                _lock.Leave();
+            }
         }
     }
 
     public class SensiboApiException : Exception
     {
+        /// <summary>0 = sin respuesta HTTP (error de red, timeout, TLS).</summary>
         public int StatusCode { get; private set; }
+
+        /// <summary>Errores que vale la pena reintentar: de red y del lado del servidor (5xx).</summary>
+        public bool IsTransient
+        {
+            get { return StatusCode == 0 || StatusCode >= 500; }
+        }
 
         public SensiboApiException(string message, int statusCode) : base(message)
         {
