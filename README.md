@@ -1,5 +1,6 @@
 # Sensibo para Crestron Home
 
+![Build](https://github.com/wilkinMelendez/SensiboCH/actions/workflows/build.yml/badge.svg)
 ![Plataforma](https://img.shields.io/badge/plataforma-Crestron%20Home-1f6feb)
 ![Procesadores](https://img.shields.io/badge/procesadores-4--Series-555)
 ![Framework](https://img.shields.io/badge/.NET%20Framework-4.7-512bd4)
@@ -153,6 +154,8 @@ El paquete `ExtensionDevice_Sensibo_Thermostat_Cloud.pkg` se genera en `bin/Rele
 | `Crestron.DeviceDrivers.ManifestUtil` 29.0.10 | Genera el `.dat` y el `.pkg` después del build |
 
 > El código está escrito con sintaxis **C# 3** (`<LangVersion>3</LangVersion>`), por compatibilidad con la cadena de compilación de Crestron. No uses características de versiones más nuevas del lenguaje.
+
+Cada push a `main` y cada pull request se compilan en GitHub Actions ([`build.yml`](.github/workflows/build.yml)). El `.pkg` resultante queda disponible como artefacto de la ejecución.
 
 Para compilar sin generar el paquete:
 
